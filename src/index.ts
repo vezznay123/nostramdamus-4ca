@@ -24,6 +24,7 @@ import {
   loadFromBigQuery,
   parseBigQueryDataToHistorical
 } from './bigquery';
+import { dashboardHTML } from './dashboard.html';
 
 // Environment bindings
 export interface Env {
@@ -174,6 +175,35 @@ app.get('/auth/logout', async (c) => {
     <body>Logging out...</body>
     </html>
   `);
+});
+
+// ============================================================================
+// DASHBOARD
+// ============================================================================
+
+app.get('/dashboard', async (c) => {
+  try {
+    const userId = await getUserIdFromRequest(c.req.raw, c.env.JWT_SECRET);
+
+    if (!userId) {
+      return c.redirect('/');
+    }
+
+    // Get user info from database
+    const user = await c.env.DB.prepare(`
+      SELECT email, name, picture FROM users WHERE id = ?
+    `).bind(userId).first() as any;
+
+    if (!user) {
+      return c.redirect('/');
+    }
+
+    return c.html(dashboardHTML(user.email, user.name, user.picture || ''));
+
+  } catch (error) {
+    console.error('Dashboard error:', error);
+    return c.redirect('/');
+  }
 });
 
 // ============================================================================

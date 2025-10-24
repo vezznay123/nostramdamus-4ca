@@ -275,16 +275,154 @@ compatibility_flags = ["nodejs_compat"]
 2. Verify GOOGLE_CLIENT_SECRET is set
 3. Ensure redirect URI matches Google Console
 
-## Next Steps
+## Deployment Steps
 
-1. Complete OAuth flow implementation
-2. Implement Google Sheets data loading
-3. Implement BigQuery integration
-4. Build frontend dashboard
-5. Add forecast result visualization
-6. Implement "push to sheets" functionality
-7. Add user session management
-8. Deploy to custom domain
+### 1. Set Google OAuth Credentials
+
+First, create OAuth 2.0 credentials in Google Cloud Console:
+1. Go to https://console.cloud.google.com/apis/credentials
+2. Create OAuth 2.0 Client ID
+3. Add authorized redirect URI: `https://your-worker.workers.dev/auth/callback`
+4. Note the Client ID and Client Secret
+
+Update `wrangler.toml`:
+```toml
+[vars]
+GOOGLE_CLIENT_ID = "your-client-id.apps.googleusercontent.com"
+GOOGLE_REDIRECT_URI = "https://your-worker.workers.dev/auth/callback"
+```
+
+### 2. Set Secrets
+
+```bash
+# Set Google Client Secret
+wrangler secret put GOOGLE_CLIENT_SECRET
+# Enter your Google Client Secret when prompted
+
+# Set JWT Secret (use a random string)
+wrangler secret put JWT_SECRET
+# Enter a random secure string when prompted
+```
+
+### 3. Deploy to Production
+
+```bash
+wrangler deploy
+```
+
+Your Worker will be deployed to: `https://nostradamus-forecast.workers.dev`
+
+### 4. Enable R2 (Optional)
+
+If you need R2 storage:
+1. Go to https://dash.cloudflare.com → R2
+2. Enable R2
+3. Run: `wrangler r2 bucket create nostradamus-data`
+
+## Features Implemented
+
+✅ **Complete OAuth 2.0 Flow**
+- Google authentication with automatic token refresh
+- JWT session management
+- Secure token storage in D1
+
+✅ **Data Loading**
+- Google Sheets integration with OAuth
+- BigQuery integration with OAuth
+- Auto-parsing to historical data format
+
+✅ **Workers AI Forecasting**
+- Llama 2 model for time series analysis
+- Multiple forecast modes (volatility, correlated, single)
+- Seasonality and trend detection
+- Fallback logic if AI fails
+
+✅ **Frontend Dashboard**
+- Complete HTML/JS dashboard
+- Interactive forecast charts (Plotly.js)
+- Data loading UI
+- Export to Google Sheets
+- Download CSV results
+
+✅ **Scheduled Forecasting**
+- Cron triggers (every 6 hours)
+- Automatic data loading and forecasting
+- Results saved to D1
+
+## Complete API Reference
+
+### Authentication
+- `GET /auth/google` - Initiate OAuth flow
+- `GET /auth/callback` - OAuth callback
+- `GET /auth/logout` - Logout
+- `GET /dashboard` - Main dashboard (requires auth)
+
+### Data Loading
+- `POST /api/load-google-sheets` - Load from Sheets
+  ```json
+  {
+    "spreadsheet_url": "https://docs.google.com/spreadsheets/d/...",
+    "sheet_name": "Sheet1"
+  }
+  ```
+
+- `POST /api/load-bigquery` - Load from BigQuery
+  ```json
+  {
+    "project_id": "my-project",
+    "query": "SELECT * FROM dataset.table"
+  }
+  ```
+
+### Forecasting
+- `POST /api/forecast` - Generate forecast
+  ```json
+  {
+    "historical_data": [...],
+    "params": {
+      "mode": "volatility",
+      "forecast_days": 14,
+      "seasonal_weight": 0.5,
+      "run_rate_weight": 0.5
+    }
+  }
+  ```
+
+### Export
+- `POST /api/export-to-sheets` - Export forecasts
+  ```json
+  {
+    "spreadsheet_url": "https://docs.google.com/spreadsheets/d/...",
+    "sheet_name": "Forecast_Results",
+    "forecasts": [...]
+  }
+  ```
+
+### Projects
+- `GET /api/projects` - List projects
+- `POST /api/projects` - Create project
+- `POST /api/config/data-source` - Save data source config
+
+## Migration from Render
+
+Your Render app has been fully replicated in Workers! To migrate:
+
+1. Deploy Workers app (see above)
+2. Update your Google OAuth redirect URI
+3. Test the complete flow:
+   - Login with Google
+   - Load data from Sheets/BigQuery
+   - Generate forecast
+   - Export results
+4. Once confirmed working, update any bookmarks/links
+
+Benefits of Workers vs Render:
+- ✅ No cold starts (instant response)
+- ✅ No wake-up calls needed
+- ✅ Built-in cron scheduling
+- ✅ Global edge deployment
+- ✅ Workers AI included
+- ✅ More cost-effective (~$5.65/month)
 
 ## Support
 
