@@ -25,6 +25,8 @@ import {
   parseBigQueryDataToHistorical
 } from './bigquery';
 import { dashboardHTML } from './dashboard-html';
+import { completeDashboardHTML } from './complete-dashboard';
+import * as apiEndpoints from './api-endpoints';
 
 // Environment bindings
 export interface Env {
@@ -198,7 +200,8 @@ app.get('/dashboard', async (c) => {
       return c.redirect('/');
     }
 
-    return c.html(dashboardHTML(user.email, user.name, user.picture || ''));
+    // Use complete dashboard with ALL features
+    return c.html(completeDashboardHTML(user.email, user.name, user.picture || ''));
 
   } catch (error) {
     console.error('Dashboard error:', error);
@@ -323,6 +326,54 @@ app.post('/api/export-to-sheets', async (c) => {
     console.error('Export to sheets error:', error);
     return c.json({ success: false, error: error.message }, 500);
   }
+});
+
+// ============================================================================
+// API: ADDITIONAL ENDPOINTS
+// ============================================================================
+
+// Sample data
+app.post('/api/load-sample-data', (c) => apiEndpoints.loadSampleData(c));
+
+// CSV upload
+app.post('/api/upload-data', (c) => apiEndpoints.uploadData(c));
+
+// Historical data
+app.get('/api/historical-data', (c) => apiEndpoints.getHistoricalData(c));
+
+// Export
+app.post('/api/export-forecast', (c) => apiEndpoints.exportForecast(c));
+
+// Push results
+app.post('/api/push-results', (c) => apiEndpoints.pushResults(c));
+
+// Calibration
+app.post('/api/calibrate', (c) => apiEndpoints.calibrate(c));
+
+// Backtesting
+app.post('/api/backtest', (c) => apiEndpoints.backtest(c));
+
+// Google Apps Script
+app.post('/api/generate-apps-script', (c) => apiEndpoints.generateAppsScript(c));
+
+// Adjustments
+app.get('/api/adjustments/list', (c) => apiEndpoints.listAdjustments(c));
+app.post('/api/adjustments/add', (c) => apiEndpoints.addAdjustment(c));
+
+// Scheduler
+app.post('/api/save-scheduler-config', (c) => apiEndpoints.saveSchedulerConfig(c));
+
+// Correlated and volatility forecast modes (use same endpoint with different params)
+app.post('/api/forecast-correlated', async (c) => {
+  const body = await c.req.json();
+  body.params = { ...body.params, mode: 'correlated' };
+  return c.json(await generateForecast(c.env.AI, body.historical_data, body.params));
+});
+
+app.post('/api/forecast-with-volatility', async (c) => {
+  const body = await c.req.json();
+  body.params = { ...body.params, mode: 'volatility' };
+  return c.json(await generateForecast(c.env.AI, body.historical_data, body.params));
 });
 
 // ============================================================================
