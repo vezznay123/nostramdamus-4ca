@@ -11,7 +11,7 @@ binding = "AI"
 [[d1_databases]]
 binding = "DB"
 database_name = "nostradamus-db"
-database_id = "" # Will be filled after creation
+database_id = "2f89e486-bbc6-4ef8-a63c-a0ac49916c67"
 
 # R2 bucket for file storage
 [[r2_buckets]]
@@ -31,7 +31,7 @@ GOOGLE_REDIRECT_URI = ""
 [triggers]
 crons = ["0 */6 * * *"]  # Every 6 hours
 
-# Routes
-routes = [
-  { pattern = "nostradamus.yourdomain.com/*", zone_name = "yourdomain.com" }
-]
+# Routes (optional - for custom domain)
+# [[routes]]
+# pattern = "nostradamus.yourdomain.com/*"
+# zone_name = "yourdomain.com"
