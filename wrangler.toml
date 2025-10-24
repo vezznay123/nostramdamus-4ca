@@ -13,10 +13,10 @@ binding = "DB"
 database_name = "nostradamus-db"
 database_id = "2f89e486-bbc6-4ef8-a63c-a0ac49916c67"
 
-# R2 bucket for file storage
-[[r2_buckets]]
-binding = "R2_BUCKET"
-bucket_name = "nostradamus-data"
+# R2 bucket for file storage (optional - enable R2 first in Cloudflare Dashboard)
+# [[r2_buckets]]
+# binding = "R2_BUCKET"
+# bucket_name = "nostradamus-data"
 
 # Environment variables
 [vars]

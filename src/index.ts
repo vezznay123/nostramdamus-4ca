@@ -24,13 +24,13 @@ import {
   loadFromBigQuery,
   parseBigQueryDataToHistorical
 } from './bigquery';
-import { dashboardHTML } from './dashboard.html';
+import { dashboardHTML } from './dashboard-html';
 
 // Environment bindings
 export interface Env {
   AI: any;
   DB: D1Database;
-  R2_BUCKET: R2Bucket;
+  R2_BUCKET?: R2Bucket; // Optional - only if R2 is enabled
   GOOGLE_CLIENT_ID: string;
   GOOGLE_CLIENT_SECRET: string;
   GOOGLE_REDIRECT_URI: string;
