@@ -20,8 +20,8 @@ bucket_name = "nostradamus-data"
 
 # Environment variables
 [vars]
-GOOGLE_CLIENT_ID = ""
-GOOGLE_REDIRECT_URI = ""
+GOOGLE_CLIENT_ID = "569470321937-doo61l7sfp58b1b6j214l7srb3qljf64.apps.googleusercontent.com"
+GOOGLE_REDIRECT_URI = "https://nostradamus-forecast.jonathanverrall.workers.dev/auth/callback"
 
 # Secrets (set with: wrangler secret put SECRET_NAME)
 # GOOGLE_CLIENT_SECRET
