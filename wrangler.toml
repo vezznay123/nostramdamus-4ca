@@ -1,0 +1,37 @@
+name = "nostradamus-forecast"
+main = "src/index.ts"
+compatibility_date = "2024-01-15"
+workers_dev = true
+
+# Workers AI binding
+[ai]
+binding = "AI"
+
+# D1 Database binding
+[[d1_databases]]
+binding = "DB"
+database_name = "nostradamus-db"
+database_id = "" # Will be filled after creation
+
+# R2 bucket for file storage
+[[r2_buckets]]
+binding = "R2_BUCKET"
+bucket_name = "nostradamus-data"
+
+# Environment variables
+[vars]
+GOOGLE_CLIENT_ID = ""
+GOOGLE_REDIRECT_URI = ""
+
+# Secrets (set with: wrangler secret put SECRET_NAME)
+# GOOGLE_CLIENT_SECRET
+# JWT_SECRET
+
+# Cron triggers for scheduled forecasting
+[triggers]
+crons = ["0 */6 * * *"]  # Every 6 hours
+
+# Routes
+routes = [
+  { pattern = "nostradamus.yourdomain.com/*", zone_name = "yourdomain.com" }
+]
