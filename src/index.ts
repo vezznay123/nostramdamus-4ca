@@ -5,6 +5,25 @@
 
 import { Hono } from 'hono';
 import { generateForecast, HistoricalDataPoint, ForecastParams } from './forecasting';
+import {
+  generateAuthUrl,
+  exchangeCodeForTokens,
+  getUserInfo,
+  saveTokens,
+  createJWT,
+  getUserIdFromRequest,
+  getValidAccessToken
+} from './auth';
+import {
+  loadFromGoogleSheets,
+  parseSheetDataToHistorical,
+  writeToGoogleSheets,
+  formatForecastsForSheets
+} from './google-sheets';
+import {
+  loadFromBigQuery,
+  parseBigQueryDataToHistorical
+} from './bigquery';
 
 // Environment bindings
 export interface Env {
@@ -65,6 +84,215 @@ app.get('/', async (c) => {
     </body>
     </html>
   `);
+});
+
+// ============================================================================
+// AUTH: GOOGLE OAUTH
+// ============================================================================
+
+app.get('/auth/google', async (c) => {
+  const authUrl = generateAuthUrl(c.env);
+  return c.redirect(authUrl);
+});
+
+app.get('/auth/callback', async (c) => {
+  try {
+    const code = c.req.query('code');
+
+    if (!code) {
+      return c.html('<h1>Error: No authorization code received</h1>', 400);
+    }
+
+    // Exchange code for tokens
+    const tokens = await exchangeCodeForTokens(c.env, code);
+
+    // Get user info
+    const userInfo = await getUserInfo(tokens.access_token);
+
+    // Save or update user in database
+    const existingUser = await c.env.DB.prepare(`
+      SELECT id FROM users WHERE email = ?
+    `).bind(userInfo.email).first();
+
+    let userId: string;
+
+    if (existingUser) {
+      userId = (existingUser as any).id;
+
+      // Update user info
+      await c.env.DB.prepare(`
+        UPDATE users
+        SET name = ?, picture = ?, updated_at = datetime('now')
+        WHERE id = ?
+      `).bind(userInfo.name, userInfo.picture, userId).run();
+    } else {
+      // Create new user
+      userId = `user_${crypto.randomUUID().slice(0, 8)}`;
+
+      await c.env.DB.prepare(`
+        INSERT INTO users (id, email, name, picture)
+        VALUES (?, ?, ?, ?)
+      `).bind(userId, userInfo.email, userInfo.name, userInfo.picture).run();
+    }
+
+    // Save OAuth tokens
+    await saveTokens(c.env.DB, userId, tokens);
+
+    // Create session JWT
+    const sessionToken = await createJWT(c.env.JWT_SECRET, { userId });
+
+    // Set cookie and redirect to dashboard
+    return c.html(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <script>
+          document.cookie = 'session=${sessionToken}; path=/; max-age=86400; SameSite=Lax';
+          window.location.href = '/dashboard';
+        </script>
+      </head>
+      <body>Redirecting...</body>
+      </html>
+    `);
+
+  } catch (error: any) {
+    console.error('OAuth callback error:', error);
+    return c.html(`<h1>Authentication Error</h1><p>${error.message}</p>`, 500);
+  }
+});
+
+app.get('/auth/logout', async (c) => {
+  return c.html(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <script>
+        document.cookie = 'session=; path=/; max-age=0';
+        window.location.href = '/';
+      </script>
+    </head>
+    <body>Logging out...</body>
+    </html>
+  `);
+});
+
+// ============================================================================
+// API: DATA LOADING
+// ============================================================================
+
+app.post('/api/load-google-sheets', async (c) => {
+  try {
+    const userId = await getUserIdFromRequest(c.req.raw, c.env.JWT_SECRET);
+
+    if (!userId) {
+      return c.json({ success: false, error: 'Unauthorized' }, 401);
+    }
+
+    const accessToken = await getValidAccessToken(c.env.DB, c.env, userId);
+
+    if (!accessToken) {
+      return c.json({ success: false, error: 'No valid OAuth token. Please log in again.' }, 401);
+    }
+
+    const { spreadsheet_url, sheet_name } = await c.req.json();
+
+    if (!spreadsheet_url) {
+      return c.json({ success: false, error: 'spreadsheet_url is required' }, 400);
+    }
+
+    // Load data from Google Sheets
+    const sheetData = await loadFromGoogleSheets(accessToken, spreadsheet_url, sheet_name || 'Sheet1');
+
+    // Parse into historical data format
+    const historicalData = parseSheetDataToHistorical(sheetData);
+
+    return c.json({
+      success: true,
+      data: historicalData,
+      count: historicalData.length
+    });
+
+  } catch (error: any) {
+    console.error('Google Sheets load error:', error);
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+app.post('/api/load-bigquery', async (c) => {
+  try {
+    const userId = await getUserIdFromRequest(c.req.raw, c.env.JWT_SECRET);
+
+    if (!userId) {
+      return c.json({ success: false, error: 'Unauthorized' }, 401);
+    }
+
+    const accessToken = await getValidAccessToken(c.env.DB, c.env, userId);
+
+    if (!accessToken) {
+      return c.json({ success: false, error: 'No valid OAuth token. Please log in again.' }, 401);
+    }
+
+    const { project_id, dataset_id, table_id, query } = await c.req.json();
+
+    if (!project_id) {
+      return c.json({ success: false, error: 'project_id is required' }, 400);
+    }
+
+    // Load data from BigQuery
+    const bigQueryData = await loadFromBigQuery(accessToken, {
+      projectId: project_id,
+      datasetId: dataset_id,
+      tableId: table_id,
+      query
+    });
+
+    // Parse into historical data format
+    const historicalData = parseBigQueryDataToHistorical(bigQueryData);
+
+    return c.json({
+      success: true,
+      data: historicalData,
+      count: historicalData.length
+    });
+
+  } catch (error: any) {
+    console.error('BigQuery load error:', error);
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+app.post('/api/export-to-sheets', async (c) => {
+  try {
+    const userId = await getUserIdFromRequest(c.req.raw, c.env.JWT_SECRET);
+
+    if (!userId) {
+      return c.json({ success: false, error: 'Unauthorized' }, 401);
+    }
+
+    const accessToken = await getValidAccessToken(c.env.DB, c.env, userId);
+
+    if (!accessToken) {
+      return c.json({ success: false, error: 'No valid OAuth token. Please log in again.' }, 401);
+    }
+
+    const { spreadsheet_url, sheet_name, forecasts } = await c.req.json();
+
+    if (!spreadsheet_url || !forecasts) {
+      return c.json({ success: false, error: 'spreadsheet_url and forecasts are required' }, 400);
+    }
+
+    // Format forecasts for sheets
+    const sheetData = formatForecastsForSheets(forecasts);
+
+    // Write to Google Sheets
+    await writeToGoogleSheets(accessToken, spreadsheet_url, sheet_name || 'Forecast_Results', sheetData);
+
+    return c.json({ success: true });
+
+  } catch (error: any) {
+    console.error('Export to sheets error:', error);
+    return c.json({ success: false, error: error.message }, 500);
+  }
 });
 
 // ============================================================================
