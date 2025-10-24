@@ -3,8 +3,6 @@
  * Uses Cloudflare Workers AI for time series forecasting
  */
 
-import { Ai } from '@cloudflare/ai';
-
 export interface HistoricalDataPoint {
   date: string;
   category: string;
@@ -38,7 +36,7 @@ export interface ForecastParams {
  * Generate forecast using Workers AI
  */
 export async function generateForecast(
-  ai: Ai,
+  ai: any,
   historicalData: HistoricalDataPoint[],
   params: ForecastParams = {}
 ): Promise<ForecastResult[]> {

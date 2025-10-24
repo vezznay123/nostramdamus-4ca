@@ -4,7 +4,6 @@
  */
 
 import { Hono } from 'hono';
-import { Ai } from '@cloudflare/ai';
 import { generateForecast, HistoricalDataPoint, ForecastParams } from './forecasting';
 
 // Environment bindings
@@ -74,7 +73,7 @@ app.get('/', async (c) => {
 
 app.post('/api/forecast', async (c) => {
   try {
-    const ai = new Ai(c.env.AI);
+    const ai = c.env.AI;
 
     // Get request data
     const { historical_data, params } = await c.req.json<{
@@ -213,7 +212,7 @@ export default {
     console.log('Running scheduled forecast:', event.scheduledTime);
 
     try {
-      const ai = new Ai(env.AI);
+      const ai = env.AI;
 
       // Get all active projects with scheduling enabled
       const { results: configs } = await env.DB.prepare(`
