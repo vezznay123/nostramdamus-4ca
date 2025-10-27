@@ -26,6 +26,7 @@ import {
 } from './bigquery';
 import { dashboardHTML } from './dashboard-html';
 import { completeDashboardHTML } from './complete-dashboard';
+import { adminHTML } from './admin-html';
 import * as apiEndpoints from './api-endpoints';
 
 // Environment bindings
@@ -180,6 +181,42 @@ app.get('/auth/logout', async (c) => {
 });
 
 // ============================================================================
+// API: AUTH CHECK
+// ============================================================================
+
+app.get('/api/check-auth', async (c) => {
+  try {
+    const userId = await getUserIdFromRequest(c.req.raw, c.env.JWT_SECRET);
+
+    if (!userId) {
+      return c.json({ authenticated: false, user: null });
+    }
+
+    // Get user info from database
+    const user = await c.env.DB.prepare(`
+      SELECT email, name, picture FROM users WHERE id = ?
+    `).bind(userId).first() as any;
+
+    if (!user) {
+      return c.json({ authenticated: false, user: null });
+    }
+
+    return c.json({
+      authenticated: true,
+      user: {
+        email: user.email,
+        name: user.name,
+        picture: user.picture
+      }
+    });
+
+  } catch (error) {
+    console.error('Auth check error:', error);
+    return c.json({ authenticated: false, user: null });
+  }
+});
+
+// ============================================================================
 // DASHBOARD
 // ============================================================================
 
@@ -239,9 +276,41 @@ app.post('/api/load-google-sheets', async (c) => {
     // Parse into historical data format
     const historicalData = parseSheetDataToHistorical(sheetData);
 
+    // Calculate summary
+    const categories = [...new Set(historicalData.map(d => d.category))];
+    const dates = historicalData.map(d => d.date).sort();
+    const totalClicks = historicalData.reduce((sum, d) => sum + d.clicks, 0);
+    const totalRevenue = historicalData.reduce((sum, d) => sum + d.revenue, 0);
+
+    const dateGroups = new Map<string, { clicks: number, revenue: number }>();
+    historicalData.forEach(d => {
+      if (!dateGroups.has(d.date)) {
+        dateGroups.set(d.date, { clicks: 0, revenue: 0 });
+      }
+      const group = dateGroups.get(d.date)!;
+      group.clicks += d.clicks;
+      group.revenue += d.revenue;
+    });
+
+    const summary = {
+      total_records: historicalData.length,
+      date_range: {
+        start: dates[0],
+        end: dates[dates.length - 1]
+      },
+      categories,
+      metrics: {
+        total_clicks: totalClicks,
+        total_revenue: totalRevenue,
+        avg_daily_clicks: totalClicks / dateGroups.size,
+        avg_daily_revenue: totalRevenue / dateGroups.size
+      }
+    };
+
     return c.json({
       success: true,
       data: historicalData,
+      summary,
       count: historicalData.length
     });
 
@@ -282,9 +351,41 @@ app.post('/api/load-bigquery', async (c) => {
     // Parse into historical data format
     const historicalData = parseBigQueryDataToHistorical(bigQueryData);
 
+    // Calculate summary
+    const categories = [...new Set(historicalData.map(d => d.category))];
+    const dates = historicalData.map(d => d.date).sort();
+    const totalClicks = historicalData.reduce((sum, d) => sum + d.clicks, 0);
+    const totalRevenue = historicalData.reduce((sum, d) => sum + d.revenue, 0);
+
+    const dateGroups = new Map<string, { clicks: number, revenue: number }>();
+    historicalData.forEach(d => {
+      if (!dateGroups.has(d.date)) {
+        dateGroups.set(d.date, { clicks: 0, revenue: 0 });
+      }
+      const group = dateGroups.get(d.date)!;
+      group.clicks += d.clicks;
+      group.revenue += d.revenue;
+    });
+
+    const summary = {
+      total_records: historicalData.length,
+      date_range: {
+        start: dates[0],
+        end: dates[dates.length - 1]
+      },
+      categories,
+      metrics: {
+        total_clicks: totalClicks,
+        total_revenue: totalRevenue,
+        avg_daily_clicks: totalClicks / dateGroups.size,
+        avg_daily_revenue: totalRevenue / dateGroups.size
+      }
+    };
+
     return c.json({
       success: true,
       data: historicalData,
+      summary,
       count: historicalData.length
     });
 

@@ -9,6 +9,46 @@ import { getUserIdFromRequest } from './auth';
 import { generateForecast, type HistoricalDataPoint, type ForecastParams } from './forecasting';
 
 /**
+ * Calculate summary statistics from data
+ */
+function calculateSummary(data: HistoricalDataPoint[]) {
+  const categories = [...new Set(data.map(d => d.category))];
+  const dates = data.map(d => d.date).sort();
+
+  const totalClicks = data.reduce((sum, d) => sum + d.clicks, 0);
+  const totalRevenue = data.reduce((sum, d) => sum + d.revenue, 0);
+
+  // Calculate daily averages
+  const dateGroups = new Map<string, { clicks: number, revenue: number }>();
+  data.forEach(d => {
+    if (!dateGroups.has(d.date)) {
+      dateGroups.set(d.date, { clicks: 0, revenue: 0 });
+    }
+    const group = dateGroups.get(d.date)!;
+    group.clicks += d.clicks;
+    group.revenue += d.revenue;
+  });
+
+  const avgDailyClicks = totalClicks / dateGroups.size;
+  const avgDailyRevenue = totalRevenue / dateGroups.size;
+
+  return {
+    total_records: data.length,
+    date_range: {
+      start: dates[0],
+      end: dates[dates.length - 1]
+    },
+    categories,
+    metrics: {
+      total_clicks: totalClicks,
+      total_revenue: totalRevenue,
+      avg_daily_clicks: avgDailyClicks,
+      avg_daily_revenue: avgDailyRevenue
+    }
+  };
+}
+
+/**
  * Sample data for testing
  */
 export async function loadSampleData(c: Context<{ Bindings: Env }>) {
@@ -29,7 +69,9 @@ export async function loadSampleData(c: Context<{ Bindings: Env }>) {
     { date: '2025-01-14', category: 'Electronics', clicks: 1200, revenue: 790 },
   ];
 
-  return c.json({ success: true, data: sampleData, count: sampleData.length });
+  const summary = calculateSummary(sampleData);
+
+  return c.json({ success: true, data: sampleData, summary, count: sampleData.length });
 }
 
 /**
@@ -67,7 +109,9 @@ export async function uploadData(c: Context<{ Bindings: Env }>) {
       }
     }
 
-    return c.json({ success: true, data, count: data.length });
+    const summary = calculateSummary(data);
+
+    return c.json({ success: true, data, summary, count: data.length });
   } catch (error: any) {
     return c.json({ success: false, error: error.message }, 500);
   }
