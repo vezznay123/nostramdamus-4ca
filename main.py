@@ -333,3 +333,111 @@ def forecast_with_sarima(
         results.append(point)
 
     return results
+
+
+def auto_tune_sarima(request: Request):
+    """
+    Auto-tune SARIMA parameters using grid search on AIC
+
+    Accepts JSON with:
+    {
+        "historical_data": [...],
+        "metric": "clicks" | "revenue",
+        "s": 7
+    }
+
+    Returns:
+    {
+        "success": true,
+        "best_params": {"p": 1, "d": 1, "q": 1, "P": 1, "D": 0, "Q": 1, "s": 7},
+        "aic": 1234.56,
+        "tested": 48
+    }
+    """
+
+    if request.method == 'OPTIONS':
+        headers = {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'POST',
+            'Access-Control-Allow-Headers': 'Content-Type',
+            'Access-Control-Max-Age': '3600'
+        }
+        return ('', 204, headers)
+
+    headers = {'Access-Control-Allow-Origin': '*'}
+
+    try:
+        request_json = request.get_json()
+
+        if not request_json or 'historical_data' not in request_json:
+            return jsonify({
+                'success': False,
+                'error': 'Missing historical_data'
+            }), 400, headers
+
+        historical_data = request_json['historical_data']
+        metric = request_json.get('metric', 'clicks')
+        s = request_json.get('s', 7)
+
+        df = pd.DataFrame(historical_data)
+        df['date'] = pd.to_datetime(df['date'])
+
+        category = df['category'].unique()[0]
+        category_data = df[df['category'] == category].sort_values('date')
+        ts = category_data[metric].values
+
+        p_range = range(0, 3)
+        d_range = range(0, 2)
+        q_range = range(0, 3)
+        P_range = range(0, 2)
+        D_range = range(0, 2)
+        Q_range = range(0, 2)
+
+        best_aic = float('inf')
+        best_params = None
+        tested = 0
+
+        for p in p_range:
+            for d in d_range:
+                for q in q_range:
+                    for P in P_range:
+                        for D in D_range:
+                            for Q in Q_range:
+                                try:
+                                    model = SARIMAX(
+                                        ts,
+                                        order=(p, d, q),
+                                        seasonal_order=(P, D, Q, s),
+                                        enforce_stationarity=False,
+                                        enforce_invertibility=False
+                                    )
+                                    fitted = model.fit(disp=False, maxiter=50)
+                                    tested += 1
+
+                                    if fitted.aic < best_aic:
+                                        best_aic = fitted.aic
+                                        best_params = {
+                                            'p': p, 'd': d, 'q': q,
+                                            'P': P, 'D': D, 'Q': Q, 's': s
+                                        }
+                                except:
+                                    continue
+
+        if best_params is None:
+            return jsonify({
+                'success': False,
+                'error': 'Could not find valid SARIMA parameters'
+            }), 500, headers
+
+        return jsonify({
+            'success': True,
+            'best_params': best_params,
+            'aic': round(best_aic, 2),
+            'tested': tested
+        }), 200, headers
+
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500, headers
