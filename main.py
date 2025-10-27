@@ -420,7 +420,8 @@ def auto_tune_sarima(request: Request):
                                             'p': p, 'd': d, 'q': q,
                                             'P': P, 'D': D, 'Q': Q, 's': s
                                         }
-                                except:
+                                except Exception as e:
+                                    # Skip this combination if it fails
                                     continue
 
         if best_params is None:
