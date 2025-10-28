@@ -324,3 +324,15 @@ export async function getUserIdFromRequest(
   const payload = await verifyJWT(jwtSecret, sessionMatch[1]);
   return payload?.userId || null;
 }
+
+/**
+ * Get session from Hono context
+ * Returns { userId: string } or null if not authenticated
+ */
+export async function getSession(c: any): Promise<{ userId: string } | null> {
+  const userId = await getUserIdFromRequest(c.req.raw, c.env.JWT_SECRET);
+  if (!userId) {
+    return null;
+  }
+  return { userId };
+}
