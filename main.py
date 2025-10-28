@@ -15,7 +15,7 @@ warnings.filterwarnings('ignore')
 
 def forecast(request: Request):
     """
-    Main Cloud Function entry point
+    Main Cloud Function entry point - routes to appropriate handler
 
     Accepts JSON with:
     {
@@ -103,7 +103,6 @@ def forecast(request: Request):
                     category_data,
                     metric,
                     forecast_days,
-                    method,
                     params,
                     include_volatility,
                     confidence_level
@@ -112,7 +111,6 @@ def forecast(request: Request):
                 forecast_result = forecast_correlated(
                     category_data,
                     forecast_days,
-                    method,
                     params,
                     include_volatility,
                     confidence_level
@@ -139,7 +137,6 @@ def forecast_single_metric(
     data: pd.DataFrame,
     metric: str,
     forecast_days: int,
-    method: str,
     params: Dict[str, Any],
     include_volatility: bool,
     confidence_level: float
@@ -159,7 +156,6 @@ def forecast_single_metric(
 def forecast_correlated(
     data: pd.DataFrame,
     forecast_days: int,
-    method: str,
     params: Dict[str, Any],
     include_volatility: bool,
     confidence_level: float
