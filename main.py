@@ -239,15 +239,15 @@ def forecast_with_sarima(
 
         point = {
             'date': future_date.strftime('%Y-%m-%d'),
-            f'{metric}_forecast': max(0, round(float(forecast_values.iloc[i]), 2))
+            f'{metric}_forecast': max(0, round(float(forecast_values[i]), 2))
         }
 
         other_metric = 'revenue' if metric == 'clicks' else 'clicks'
         point[f'{other_metric}_forecast'] = 0
 
         if include_volatility:
-            point[f'{metric}_lower'] = max(0, round(float(conf_int.iloc[i, 0]), 2))
-            point[f'{metric}_upper'] = max(0, round(float(conf_int.iloc[i, 1]), 2))
+            point[f'{metric}_lower'] = max(0, round(float(conf_int[i, 0]), 2))
+            point[f'{metric}_upper'] = max(0, round(float(conf_int[i, 1]), 2))
 
         results.append(point)
 
