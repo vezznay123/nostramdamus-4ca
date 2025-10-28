@@ -1,6 +1,7 @@
 name = "nostradamus-forecast"
 main = "src/index.ts"
 compatibility_date = "2024-01-15"
+compatibility_flags = ["nodejs_compat"]
 workers_dev = true
 
 # Workers AI binding
@@ -22,6 +23,7 @@ database_id = "2f89e486-bbc6-4ef8-a63c-a0ac49916c67"
 [vars]
 GOOGLE_CLIENT_ID = "569470321937-doo61l7sfp58b1b6j214l7srb3qljf64.apps.googleusercontent.com"
 GOOGLE_REDIRECT_URI = "https://nostradamus-forecast.jonathanverrall.workers.dev/auth/callback"
+GCP_FORECAST_URL = "https://nostadam-307152784139.europe-west1.run.app/"
 
 # Secrets (set with: wrangler secret put SECRET_NAME)
 # GOOGLE_CLIENT_SECRET

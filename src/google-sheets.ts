@@ -173,3 +173,40 @@ export function formatForecastsForSheets(forecasts: any[]): any[][] {
 
   return rows;
 }
+
+/**
+ * Get information about a Google Sheet (sheet names, etc.)
+ */
+export async function getSheetInfo(accessToken: string, spreadsheetUrl: string): Promise<any> {
+  const spreadsheetId = extractSpreadsheetId(spreadsheetUrl);
+
+  if (!spreadsheetId) {
+    throw new Error('Invalid spreadsheet URL');
+  }
+
+  const response = await fetch(
+    `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}`,
+    {
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+      }
+    }
+  );
+
+  if (!response.ok) {
+    throw new Error(`Failed to get sheet info: ${response.statusText}`);
+  }
+
+  const data = await response.json();
+
+  return {
+    spreadsheet_id: data.spreadsheetId,
+    title: data.properties.title,
+    sheets: data.sheets.map((sheet: any) => ({
+      name: sheet.properties.title,
+      index: sheet.properties.index,
+      row_count: sheet.properties.gridProperties.rowCount,
+      column_count: sheet.properties.gridProperties.columnCount
+    }))
+  };
+}

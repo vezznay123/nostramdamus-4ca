@@ -348,6 +348,28 @@ export async function addAdjustment(c: Context<{ Bindings: Env }>) {
 }
 
 /**
+ * Delete adjustment
+ */
+export async function deleteAdjustment(c: Context<{ Bindings: Env }>) {
+  try {
+    const userId = await getUserIdFromRequest(c.req.raw, c.env.JWT_SECRET);
+    if (!userId) {
+      return c.json({ success: false, error: 'Unauthorized' }, 401);
+    }
+
+    const adjId = c.req.param('adj_id');
+
+    await c.env.DB.prepare(`
+      DELETE FROM adjustments WHERE id = ?
+    `).bind(adjId).run();
+
+    return c.json({ success: true });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+}
+
+/**
  * Save scheduler config
  */
 export async function saveSchedulerConfig(c: Context<{ Bindings: Env }>) {
@@ -366,6 +388,312 @@ export async function saveSchedulerConfig(c: Context<{ Bindings: Env }>) {
     `).bind(config.cron || '0 9 * * *', config.output_to_sheets ? 1 : 0, config.output_sheet_name || 'Forecast_Results').run();
 
     return c.json({ success: true });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+}
+
+/**
+ * Save data source configuration
+ */
+export async function saveDataSourceConfig(c: Context<{ Bindings: Env }>) {
+  try {
+    const userId = await getUserIdFromRequest(c.req.raw, c.env.JWT_SECRET);
+    if (!userId) {
+      return c.json({ success: false, error: 'Unauthorized' }, 401);
+    }
+
+    const { project_id, source_type, spreadsheet_url, sheet_name, query, project_id_gcp, dataset_id, table_id, load_method } = await c.req.json();
+
+    if (!project_id || !source_type) {
+      return c.json({ success: false, error: 'project_id and source_type are required' }, 400);
+    }
+
+    // Delete existing config for this project
+    await c.env.DB.prepare(`
+      DELETE FROM data_source_configs WHERE project_id = ?
+    `).bind(project_id).run();
+
+    // Insert new config
+    await c.env.DB.prepare(`
+      INSERT INTO data_source_configs
+      (project_id, source_type, spreadsheet_url, sheet_name, query, project_id_gcp, dataset_id, table_id, load_method)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      project_id,
+      source_type,
+      spreadsheet_url || null,
+      sheet_name || null,
+      query || null,
+      project_id_gcp || null,
+      dataset_id || null,
+      table_id || null,
+      load_method || null
+    ).run();
+
+    return c.json({ success: true });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+}
+
+/**
+ * Get data source configuration for a project
+ */
+export async function getDataSourceConfig(c: Context<{ Bindings: Env }>) {
+  try {
+    const userId = await getUserIdFromRequest(c.req.raw, c.env.JWT_SECRET);
+    if (!userId) {
+      return c.json({ success: false, error: 'Unauthorized' }, 401);
+    }
+
+    const projectId = c.req.param('project_id');
+
+    const config = await c.env.DB.prepare(`
+      SELECT * FROM data_source_configs WHERE project_id = ?
+    `).bind(projectId).first();
+
+    if (!config) {
+      return c.json({ success: false, error: 'No configuration found' }, 404);
+    }
+
+    return c.json({ success: true, config });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+}
+
+/**
+ * Projects Management - List all projects for user
+ */
+export async function listProjects(c: Context<{ Bindings: Env }>) {
+  try {
+    const userId = await getUserIdFromRequest(c.req.raw, c.env.JWT_SECRET);
+    if (!userId) {
+      return c.json({ success: false, error: 'Unauthorized' }, 401);
+    }
+
+    const { results } = await c.env.DB.prepare(`
+      SELECT * FROM projects WHERE user_id = ? ORDER BY created_at DESC
+    `).bind(userId).all();
+
+    return c.json({ success: true, projects: results || [] });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+}
+
+/**
+ * Projects Management - Get single project
+ */
+export async function getProject(c: Context<{ Bindings: Env }>) {
+  try {
+    const userId = await getUserIdFromRequest(c.req.raw, c.env.JWT_SECRET);
+    if (!userId) {
+      return c.json({ success: false, error: 'Unauthorized' }, 401);
+    }
+
+    const projectId = c.req.param('project_id');
+
+    const result = await c.env.DB.prepare(`
+      SELECT * FROM projects WHERE id = ? AND user_id = ?
+    `).bind(projectId, userId).first();
+
+    if (!result) {
+      return c.json({ success: false, error: 'Project not found' }, 404);
+    }
+
+    return c.json({ success: true, project: result });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+}
+
+/**
+ * Projects Management - Create new project
+ */
+export async function createProject(c: Context<{ Bindings: Env }>) {
+  try {
+    const userId = await getUserIdFromRequest(c.req.raw, c.env.JWT_SECRET);
+    if (!userId) {
+      return c.json({ success: false, error: 'Unauthorized' }, 401);
+    }
+
+    const { name, description, data_source, data_source_config } = await c.req.json();
+
+    if (!name) {
+      return c.json({ success: false, error: 'Project name is required' }, 400);
+    }
+
+    const projectId = `proj_${crypto.randomUUID().slice(0, 8)}`;
+
+    // Check if this is the user's first project - if so, make it active
+    const { results: existingProjects } = await c.env.DB.prepare(`
+      SELECT COUNT(*) as count FROM projects WHERE user_id = ?
+    `).bind(userId).all();
+
+    const isFirstProject = existingProjects && existingProjects.length > 0 && (existingProjects[0] as any).count === 0;
+
+    await c.env.DB.prepare(`
+      INSERT INTO projects (id, user_id, name, description, data_source_type, is_active)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).bind(
+      projectId,
+      userId,
+      name,
+      description || null,
+      data_source || 'csv',
+      isFirstProject ? 1 : 0
+    ).run();
+
+    return c.json({ success: true, id: projectId, is_active: isFirstProject });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+}
+
+/**
+ * Projects Management - Update project
+ */
+export async function updateProject(c: Context<{ Bindings: Env }>) {
+  try {
+    const userId = await getUserIdFromRequest(c.req.raw, c.env.JWT_SECRET);
+    if (!userId) {
+      return c.json({ success: false, error: 'Unauthorized' }, 401);
+    }
+
+    const projectId = c.req.param('project_id');
+    const { name, description, data_source, data_source_config } = await c.req.json();
+
+    // Verify ownership
+    const existing = await c.env.DB.prepare(`
+      SELECT id FROM projects WHERE id = ? AND user_id = ?
+    `).bind(projectId, userId).first();
+
+    if (!existing) {
+      return c.json({ success: false, error: 'Project not found or unauthorized' }, 404);
+    }
+
+    await c.env.DB.prepare(`
+      UPDATE projects
+      SET name = ?, description = ?, data_source_type = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ? AND user_id = ?
+    `).bind(
+      name,
+      description || null,
+      data_source || 'csv',
+      projectId,
+      userId
+    ).run();
+
+    return c.json({ success: true });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+}
+
+/**
+ * Projects Management - Delete project
+ */
+export async function deleteProject(c: Context<{ Bindings: Env }>) {
+  try {
+    const userId = await getUserIdFromRequest(c.req.raw, c.env.JWT_SECRET);
+    if (!userId) {
+      return c.json({ success: false, error: 'Unauthorized' }, 401);
+    }
+
+    const projectId = c.req.param('project_id');
+
+    // Verify ownership
+    const existing = await c.env.DB.prepare(`
+      SELECT is_active FROM projects WHERE id = ? AND user_id = ?
+    `).bind(projectId, userId).first();
+
+    if (!existing) {
+      return c.json({ success: false, error: 'Project not found or unauthorized' }, 404);
+    }
+
+    // Check if it's the active project
+    const isActive = (existing as any).is_active === 1;
+
+    // Delete the project
+    await c.env.DB.prepare(`
+      DELETE FROM projects WHERE id = ? AND user_id = ?
+    `).bind(projectId, userId).run();
+
+    // If we deleted the active project, set another project as active
+    if (isActive) {
+      await c.env.DB.prepare(`
+        UPDATE projects
+        SET is_active = 1
+        WHERE user_id = ? AND id = (
+          SELECT id FROM projects WHERE user_id = ? LIMIT 1
+        )
+      `).bind(userId, userId).run();
+    }
+
+    return c.json({ success: true });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+}
+
+/**
+ * Projects Management - Set active project
+ */
+export async function setActiveProject(c: Context<{ Bindings: Env }>) {
+  try {
+    const userId = await getUserIdFromRequest(c.req.raw, c.env.JWT_SECRET);
+    if (!userId) {
+      return c.json({ success: false, error: 'Unauthorized' }, 401);
+    }
+
+    const projectId = c.req.param('project_id');
+
+    // Verify ownership
+    const existing = await c.env.DB.prepare(`
+      SELECT id FROM projects WHERE id = ? AND user_id = ?
+    `).bind(projectId, userId).first();
+
+    if (!existing) {
+      return c.json({ success: false, error: 'Project not found or unauthorized' }, 404);
+    }
+
+    // Deactivate all other projects for this user
+    await c.env.DB.prepare(`
+      UPDATE projects SET is_active = 0 WHERE user_id = ?
+    `).bind(userId).run();
+
+    // Activate the selected project
+    await c.env.DB.prepare(`
+      UPDATE projects SET is_active = 1 WHERE id = ? AND user_id = ?
+    `).bind(projectId, userId).run();
+
+    return c.json({ success: true });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+}
+
+/**
+ * Projects Management - Get active project
+ */
+export async function getActiveProject(c: Context<{ Bindings: Env }>) {
+  try {
+    const userId = await getUserIdFromRequest(c.req.raw, c.env.JWT_SECRET);
+    if (!userId) {
+      return c.json({ success: false, error: 'Unauthorized' }, 401);
+    }
+
+    const result = await c.env.DB.prepare(`
+      SELECT * FROM projects WHERE user_id = ? AND is_active = 1 LIMIT 1
+    `).bind(userId).first();
+
+    if (!result) {
+      return c.json({ success: false, error: 'No active project found' }, 404);
+    }
+
+    return c.json({ success: true, project: result });
   } catch (error: any) {
     return c.json({ success: false, error: error.message }, 500);
   }

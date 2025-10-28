@@ -239,6 +239,132 @@ CREATE TABLE IF NOT EXISTS data_quality_checks (
 CREATE INDEX IF NOT EXISTS idx_quality_project ON data_quality_checks(project_id);
 CREATE INDEX IF NOT EXISTS idx_quality_date ON data_quality_checks(check_date);
 
+-- Forecast scenarios (what-if analysis)
+CREATE TABLE IF NOT EXISTS forecast_scenarios (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  description TEXT,
+  parameters TEXT NOT NULL, -- JSON of SARIMA params and adjustments
+  created_by TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  is_baseline INTEGER DEFAULT 0,
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_scenarios_project ON forecast_scenarios(project_id);
+CREATE INDEX IF NOT EXISTS idx_scenarios_baseline ON forecast_scenarios(project_id, is_baseline);
+
+-- Scenario forecasts
+CREATE TABLE IF NOT EXISTS scenario_forecasts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  scenario_id TEXT NOT NULL,
+  category TEXT NOT NULL,
+  forecast_date TEXT NOT NULL,
+  clicks_forecast REAL,
+  revenue_forecast REAL,
+  clicks_lower REAL,
+  clicks_upper REAL,
+  revenue_lower REAL,
+  revenue_upper REAL,
+  generated_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (scenario_id) REFERENCES forecast_scenarios(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_scenario_forecasts ON scenario_forecasts(scenario_id);
+
+-- Project collaborators (team sharing)
+CREATE TABLE IF NOT EXISTS project_collaborators (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  role TEXT NOT NULL DEFAULT 'viewer', -- 'owner', 'editor', 'viewer'
+  invited_by TEXT NOT NULL,
+  invited_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (invited_by) REFERENCES users(id) ON DELETE SET NULL,
+  UNIQUE(project_id, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_collaborators_project ON project_collaborators(project_id);
+CREATE INDEX IF NOT EXISTS idx_collaborators_user ON project_collaborators(user_id);
+
+-- Project comments/notes
+CREATE TABLE IF NOT EXISTS project_comments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id TEXT NOT NULL,
+  user_id TEXT NOT NULL,
+  comment TEXT NOT NULL,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_comments_project ON project_comments(project_id);
+
+-- API keys for external access
+CREATE TABLE IF NOT EXISTS api_keys (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  key_hash TEXT NOT NULL,
+  name TEXT NOT NULL,
+  last_used_at TEXT,
+  requests_count INTEGER DEFAULT 0,
+  rate_limit INTEGER DEFAULT 1000, -- requests per hour
+  is_active INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now')),
+  expires_at TEXT,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_api_keys_user ON api_keys(user_id);
+CREATE INDEX IF NOT EXISTS idx_api_keys_hash ON api_keys(key_hash);
+
+-- Notifications
+CREATE TABLE IF NOT EXISTS notifications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL,
+  type TEXT NOT NULL, -- 'forecast_complete', 'alert_triggered', 'data_quality', 'share_invite'
+  title TEXT NOT NULL,
+  message TEXT NOT NULL,
+  data TEXT, -- JSON
+  is_read INTEGER DEFAULT 0,
+  is_emailed INTEGER DEFAULT 0,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications(user_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(user_id, is_read);
+
+-- Email notification settings
+CREATE TABLE IF NOT EXISTS notification_settings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id TEXT NOT NULL UNIQUE,
+  forecast_complete INTEGER DEFAULT 1,
+  alert_triggered INTEGER DEFAULT 1,
+  data_quality_issues INTEGER DEFAULT 1,
+  daily_summary INTEGER DEFAULT 0,
+  weekly_summary INTEGER DEFAULT 0,
+  FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_notification_settings_user ON notification_settings(user_id);
+
+-- Data transformations
+CREATE TABLE IF NOT EXISTS data_transformations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id TEXT NOT NULL,
+  transformation_type TEXT NOT NULL, -- 'log', 'sqrt', 'box_cox', 'seasonal_decompose'
+  parameters TEXT, -- JSON
+  applied_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_transformations_project ON data_transformations(project_id);
+
 -- Add missing columns to existing tables (if they don't exist)
 -- Note: SQLite doesn't support ADD COLUMN IF NOT EXISTS, so these must be run manually
 
@@ -246,3 +372,4 @@ CREATE INDEX IF NOT EXISTS idx_quality_date ON data_quality_checks(check_date);
 -- ALTER TABLE scheduler_configs ADD COLUMN forecast_params TEXT; -- JSON of forecast parameters
 -- ALTER TABLE scheduler_configs ADD COLUMN notification_email TEXT;
 -- ALTER TABLE forecast_runs ADD COLUMN data_quality_score REAL;
+-- ALTER TABLE forecast_runs ADD COLUMN scenario_id TEXT REFERENCES forecast_scenarios(id);

@@ -521,6 +521,139 @@ app.post('/api/save-scheduler-config', (c) => apiEndpoints.saveSchedulerConfig(c
 app.post('/api/save-data-source-config', (c) => apiEndpoints.saveDataSourceConfig(c));
 app.get('/api/data-source-config/:project_id', (c) => apiEndpoints.getDataSourceConfig(c));
 
+// Refresh Data Source
+app.post('/api/refresh-data-source', async (c) => {
+  const session = await getSession(c);
+  if (!session) {
+    return c.json({ success: false, error: 'Not authenticated' }, 401);
+  }
+
+  const { project_id } = await c.req.json();
+
+  if (!project_id) {
+    return c.json({ success: false, error: 'project_id is required' }, 400);
+  }
+
+  try {
+    // Get data source config for the project
+    const { results: configs } = await c.env.DB.prepare(`
+      SELECT * FROM data_source_configs WHERE project_id = ? LIMIT 1
+    `).bind(project_id).all();
+
+    if (!configs || configs.length === 0) {
+      return c.json({ success: false, error: 'No data source configured for this project' }, 404);
+    }
+
+    const config = configs[0] as any;
+    let data: any[] = [];
+
+    // Load data based on source type
+    if (config.source_type === 'google_sheets') {
+      // Get user's OAuth token
+      const tokenResult = await c.env.DB.prepare(`
+        SELECT access_token FROM oauth_tokens WHERE user_id = ? AND provider = 'google' LIMIT 1
+      `).bind(session.userId).first();
+
+      if (!tokenResult) {
+        return c.json({ success: false, error: 'Google OAuth token not found. Please re-authenticate.' }, 401);
+      }
+
+      const spreadsheetId = config.spreadsheet_url.match(/[-\w]{25,}/)?.[0];
+      if (!spreadsheetId) {
+        return c.json({ success: false, error: 'Invalid spreadsheet URL' }, 400);
+      }
+
+      const range = `${config.sheet_name || 'Sheet1'}!A:D`;
+      const sheetsResponse = await fetch(
+        `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${range}`,
+        {
+          headers: {
+            'Authorization': `Bearer ${tokenResult.access_token}`,
+          },
+        }
+      );
+
+      if (!sheetsResponse.ok) {
+        return c.json({ success: false, error: 'Failed to fetch data from Google Sheets' }, 500);
+      }
+
+      const sheetsData = await sheetsResponse.json();
+      const rows = sheetsData.values || [];
+
+      // Skip header row and parse data
+      data = rows.slice(1).map((row: any[]) => ({
+        date: row[0],
+        category: row[1],
+        clicks: parseFloat(row[2]) || 0,
+        revenue: parseFloat(row[3]) || 0,
+      })).filter((item: any) => item.date && item.category);
+
+    } else if (config.source_type === 'bigquery') {
+      // Get user's OAuth token
+      const tokenResult = await c.env.DB.prepare(`
+        SELECT access_token FROM oauth_tokens WHERE user_id = ? AND provider = 'google' LIMIT 1
+      `).bind(session.userId).first();
+
+      if (!tokenResult) {
+        return c.json({ success: false, error: 'Google OAuth token not found. Please re-authenticate.' }, 401);
+      }
+
+      let bigqueryUrl: string;
+      if (config.load_method === 'query') {
+        bigqueryUrl = `https://bigquery.googleapis.com/bigquery/v2/projects/${config.project_id_gcp}/queries`;
+      } else {
+        bigqueryUrl = `https://bigquery.googleapis.com/bigquery/v2/projects/${config.project_id_gcp}/datasets/${config.dataset_id}/tables/${config.table_id}/data`;
+      }
+
+      const bqResponse = await fetch(bigqueryUrl, {
+        method: config.load_method === 'query' ? 'POST' : 'GET',
+        headers: {
+          'Authorization': `Bearer ${tokenResult.access_token}`,
+          'Content-Type': 'application/json',
+        },
+        body: config.load_method === 'query' ? JSON.stringify({ query: config.query, useLegacySql: false }) : undefined,
+      });
+
+      if (!bqResponse.ok) {
+        return c.json({ success: false, error: 'Failed to fetch data from BigQuery' }, 500);
+      }
+
+      const bqData = await bqResponse.json();
+      const rows = bqData.rows || [];
+
+      data = rows.map((row: any) => ({
+        date: row.f[0].v,
+        category: row.f[1].v,
+        clicks: parseFloat(row.f[2].v) || 0,
+        revenue: parseFloat(row.f[3].v) || 0,
+      }));
+    } else {
+      return c.json({ success: false, error: 'Unsupported data source type' }, 400);
+    }
+
+    // Calculate summary
+    const summary = {
+      total_records: data.length,
+      date_range: {
+        start: data[0]?.date || '',
+        end: data[data.length - 1]?.date || '',
+      },
+      categories: [...new Set(data.map((d: any) => d.category))],
+      metrics: {
+        total_clicks: data.reduce((sum: number, d: any) => sum + d.clicks, 0),
+        total_revenue: data.reduce((sum: number, d: any) => sum + d.revenue, 0),
+        avg_daily_clicks: data.reduce((sum: number, d: any) => sum + d.clicks, 0) / data.length,
+        avg_daily_revenue: data.reduce((sum: number, d: any) => sum + d.revenue, 0) / data.length,
+      },
+    };
+
+    return c.json({ success: true, data, summary });
+  } catch (error: any) {
+    console.error('Error refreshing data source:', error);
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
 // Health check
 app.get('/api/health', (c) => {
   return c.json({
@@ -1013,6 +1146,508 @@ app.get('/api/forecast-history/:projectId', async (c) => {
         forecast_data: row.forecast_data ? JSON.parse(row.forecast_data as string) : null
       }))
     });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// ============================================================================
+// CSV EXPORT
+// ============================================================================
+
+// Export forecast to CSV
+app.post('/api/export-csv', async (c) => {
+  try {
+    const session = await getSession(c);
+    if (!session) {
+      return c.json({ success: false, error: 'Not authenticated' }, 401);
+    }
+
+    const body = await c.req.json();
+    const { forecasts } = body;
+
+    if (!forecasts || !Array.isArray(forecasts)) {
+      return c.json({ success: false, error: 'Missing forecasts data' }, 400);
+    }
+
+    // Convert forecasts to CSV
+    const rows: string[][] = [['Date', 'Category', 'Clicks Forecast', 'Revenue Forecast', 'Clicks Lower', 'Clicks Upper', 'Revenue Lower', 'Revenue Upper']];
+
+    for (const categoryForecast of forecasts) {
+      for (const forecast of categoryForecast.forecasts) {
+        rows.push([
+          forecast.date,
+          categoryForecast.category,
+          String(forecast.clicks_forecast || 0),
+          String(forecast.revenue_forecast || 0),
+          String(forecast.clicks_lower || ''),
+          String(forecast.clicks_upper || ''),
+          String(forecast.revenue_lower || ''),
+          String(forecast.revenue_upper || ''),
+        ]);
+      }
+    }
+
+    const csv = rows.map(row => row.join(',')).join('\n');
+
+    return new Response(csv, {
+      headers: {
+        'Content-Type': 'text/csv',
+        'Content-Disposition': `attachment; filename="forecast_${new Date().toISOString().split('T')[0]}.csv"`,
+      },
+    });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// ============================================================================
+// FORECAST SCENARIOS
+// ============================================================================
+
+// Create scenario
+app.post('/api/scenarios', async (c) => {
+  try {
+    const session = await getSession(c);
+    if (!session) {
+      return c.json({ success: false, error: 'Not authenticated' }, 401);
+    }
+
+    const body = await c.req.json();
+    const { project_id, name, description, parameters, is_baseline } = body;
+
+    const scenarioId = crypto.randomUUID();
+
+    await c.env.DB.prepare(`
+      INSERT INTO forecast_scenarios (id, project_id, name, description, parameters, created_by, is_baseline)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).bind(scenarioId, project_id, name, description || null, JSON.stringify(parameters), session.userId, is_baseline ? 1 : 0).run();
+
+    return c.json({ success: true, scenario_id: scenarioId });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// Get scenarios for project
+app.get('/api/scenarios/:projectId', async (c) => {
+  try {
+    const session = await getSession(c);
+    if (!session) {
+      return c.json({ success: false, error: 'Not authenticated' }, 401);
+    }
+
+    const projectId = c.req.param('projectId');
+
+    const scenarios = await c.env.DB.prepare(`
+      SELECT s.*, u.name as created_by_name
+      FROM forecast_scenarios s
+      JOIN users u ON u.id = s.created_by
+      WHERE s.project_id = ?
+      ORDER BY s.created_at DESC
+    `).bind(projectId).all();
+
+    return c.json({
+      success: true,
+      scenarios: scenarios.results.map(row => ({
+        ...row,
+        parameters: JSON.parse(row.parameters as string)
+      }))
+    });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// Delete scenario
+app.delete('/api/scenarios/:scenarioId', async (c) => {
+  try {
+    const session = await getSession(c);
+    if (!session) {
+      return c.json({ success: false, error: 'Not authenticated' }, 401);
+    }
+
+    const scenarioId = c.req.param('scenarioId');
+
+    await c.env.DB.prepare(`DELETE FROM forecast_scenarios WHERE id = ?`).bind(scenarioId).run();
+
+    return c.json({ success: true });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// ============================================================================
+// TEAM COLLABORATION
+// ============================================================================
+
+// Add collaborator
+app.post('/api/collaborators', async (c) => {
+  try {
+    const session = await getSession(c);
+    if (!session) {
+      return c.json({ success: false, error: 'Not authenticated' }, 401);
+    }
+
+    const body = await c.req.json();
+    const { project_id, user_email, role } = body;
+
+    // Find user by email
+    const user = await c.env.DB.prepare(`SELECT id FROM users WHERE email = ?`).bind(user_email).first();
+
+    if (!user) {
+      return c.json({ success: false, error: 'User not found' }, 404);
+    }
+
+    await c.env.DB.prepare(`
+      INSERT INTO project_collaborators (project_id, user_id, role, invited_by)
+      VALUES (?, ?, ?, ?)
+    `).bind(project_id, user.id, role, session.userId).run();
+
+    // Create notification
+    await c.env.DB.prepare(`
+      INSERT INTO notifications (user_id, type, title, message, data)
+      VALUES (?, 'share_invite', ?, ?, ?)
+    `).bind(user.id, 'Project Invitation', `You've been invited to collaborate on a project`, JSON.stringify({ project_id })).run();
+
+    return c.json({ success: true });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// Get collaborators
+app.get('/api/collaborators/:projectId', async (c) => {
+  try {
+    const session = await getSession(c);
+    if (!session) {
+      return c.json({ success: false, error: 'Not authenticated' }, 401);
+    }
+
+    const projectId = c.req.param('projectId');
+
+    const collaborators = await c.env.DB.prepare(`
+      SELECT c.*, u.name, u.email, u.picture
+      FROM project_collaborators c
+      JOIN users u ON u.id = c.user_id
+      WHERE c.project_id = ?
+      ORDER BY c.invited_at DESC
+    `).bind(projectId).all();
+
+    return c.json({ success: true, collaborators: collaborators.results });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// Remove collaborator
+app.delete('/api/collaborators/:collaboratorId', async (c) => {
+  try {
+    const session = await getSession(c);
+    if (!session) {
+      return c.json({ success: false, error: 'Not authenticated' }, 401);
+    }
+
+    const collaboratorId = c.req.param('collaboratorId');
+
+    await c.env.DB.prepare(`DELETE FROM project_collaborators WHERE id = ?`).bind(collaboratorId).run();
+
+    return c.json({ success: true });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// Add comment
+app.post('/api/comments', async (c) => {
+  try {
+    const session = await getSession(c);
+    if (!session) {
+      return c.json({ success: false, error: 'Not authenticated' }, 401);
+    }
+
+    const body = await c.req.json();
+    const { project_id, comment } = body;
+
+    await c.env.DB.prepare(`
+      INSERT INTO project_comments (project_id, user_id, comment)
+      VALUES (?, ?, ?)
+    `).bind(project_id, session.userId, comment).run();
+
+    return c.json({ success: true });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// Get comments
+app.get('/api/comments/:projectId', async (c) => {
+  try {
+    const session = await getSession(c);
+    if (!session) {
+      return c.json({ success: false, error: 'Not authenticated' }, 401);
+    }
+
+    const projectId = c.req.param('projectId');
+
+    const comments = await c.env.DB.prepare(`
+      SELECT c.*, u.name, u.picture
+      FROM project_comments c
+      JOIN users u ON u.id = c.user_id
+      WHERE c.project_id = ?
+      ORDER BY c.created_at DESC
+      LIMIT 50
+    `).bind(projectId).all();
+
+    return c.json({ success: true, comments: comments.results });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// ============================================================================
+// API KEYS
+// ============================================================================
+
+// Generate API key
+app.post('/api/api-keys', async (c) => {
+  try {
+    const session = await getSession(c);
+    if (!session) {
+      return c.json({ success: false, error: 'Not authenticated' }, 401);
+    }
+
+    const body = await c.req.json();
+    const { name, rate_limit, expires_at } = body;
+
+    const keyId = crypto.randomUUID();
+    const apiKey = `nst_${crypto.randomUUID()}${crypto.randomUUID()}`.replace(/-/g, '');
+
+    // Hash the key (simple hash for demo, use proper crypto in production)
+    const encoder = new TextEncoder();
+    const data = encoder.encode(apiKey);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    const keyHash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+    await c.env.DB.prepare(`
+      INSERT INTO api_keys (id, user_id, key_hash, name, rate_limit, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).bind(keyId, session.userId, keyHash, name, rate_limit || 1000, expires_at || null).run();
+
+    return c.json({ success: true, api_key: apiKey, key_id: keyId });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// List API keys
+app.get('/api/api-keys', async (c) => {
+  try {
+    const session = await getSession(c);
+    if (!session) {
+      return c.json({ success: false, error: 'Not authenticated' }, 401);
+    }
+
+    const keys = await c.env.DB.prepare(`
+      SELECT id, name, last_used_at, requests_count, rate_limit, is_active, created_at, expires_at
+      FROM api_keys
+      WHERE user_id = ?
+      ORDER BY created_at DESC
+    `).bind(session.userId).all();
+
+    return c.json({ success: true, api_keys: keys.results });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// Revoke API key
+app.delete('/api/api-keys/:keyId', async (c) => {
+  try {
+    const session = await getSession(c);
+    if (!session) {
+      return c.json({ success: false, error: 'Not authenticated' }, 401);
+    }
+
+    const keyId = c.req.param('keyId');
+
+    await c.env.DB.prepare(`
+      UPDATE api_keys SET is_active = 0 WHERE id = ? AND user_id = ?
+    `).bind(keyId, session.userId).run();
+
+    return c.json({ success: true });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// ============================================================================
+// NOTIFICATIONS
+// ============================================================================
+
+// Get notifications
+app.get('/api/notifications', async (c) => {
+  try {
+    const session = await getSession(c);
+    if (!session) {
+      return c.json({ success: false, error: 'Not authenticated' }, 401);
+    }
+
+    const notifications = await c.env.DB.prepare(`
+      SELECT * FROM notifications
+      WHERE user_id = ?
+      ORDER BY created_at DESC
+      LIMIT 50
+    `).bind(session.userId).all();
+
+    return c.json({ success: true, notifications: notifications.results });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// Mark notification as read
+app.patch('/api/notifications/:notificationId/read', async (c) => {
+  try {
+    const session = await getSession(c);
+    if (!session) {
+      return c.json({ success: false, error: 'Not authenticated' }, 401);
+    }
+
+    const notificationId = c.req.param('notificationId');
+
+    await c.env.DB.prepare(`
+      UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?
+    `).bind(notificationId, session.userId).run();
+
+    return c.json({ success: true });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// Get notification settings
+app.get('/api/notification-settings', async (c) => {
+  try {
+    const session = await getSession(c);
+    if (!session) {
+      return c.json({ success: false, error: 'Not authenticated' }, 401);
+    }
+
+    let settings = await c.env.DB.prepare(`
+      SELECT * FROM notification_settings WHERE user_id = ?
+    `).bind(session.userId).first();
+
+    if (!settings) {
+      // Create default settings
+      await c.env.DB.prepare(`
+        INSERT INTO notification_settings (user_id) VALUES (?)
+      `).bind(session.userId).run();
+
+      settings = await c.env.DB.prepare(`
+        SELECT * FROM notification_settings WHERE user_id = ?
+      `).bind(session.userId).first();
+    }
+
+    return c.json({ success: true, settings });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// Update notification settings
+app.patch('/api/notification-settings', async (c) => {
+  try {
+    const session = await getSession(c);
+    if (!session) {
+      return c.json({ success: false, error: 'Not authenticated' }, 401);
+    }
+
+    const body = await c.req.json();
+    const { forecast_complete, alert_triggered, data_quality_issues, daily_summary, weekly_summary } = body;
+
+    await c.env.DB.prepare(`
+      UPDATE notification_settings
+      SET forecast_complete = ?, alert_triggered = ?, data_quality_issues = ?, daily_summary = ?, weekly_summary = ?
+      WHERE user_id = ?
+    `).bind(
+      forecast_complete ? 1 : 0,
+      alert_triggered ? 1 : 0,
+      data_quality_issues ? 1 : 0,
+      daily_summary ? 1 : 0,
+      weekly_summary ? 1 : 0,
+      session.userId
+    ).run();
+
+    return c.json({ success: true });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// ============================================================================
+// DATA TRANSFORMATIONS
+// ============================================================================
+
+// Apply transformation
+app.post('/api/transformations', async (c) => {
+  try {
+    const session = await getSession(c);
+    if (!session) {
+      return c.json({ success: false, error: 'Not authenticated' }, 401);
+    }
+
+    const body = await c.req.json();
+    const { project_id, transformation_type, parameters, data } = body;
+
+    let transformedData = [...data];
+
+    // Apply transformation based on type
+    if (transformation_type === 'log') {
+      transformedData = transformedData.map(row => ({
+        ...row,
+        clicks: row.clicks > 0 ? Math.log(row.clicks) : 0,
+        revenue: row.revenue > 0 ? Math.log(row.revenue) : 0,
+      }));
+    } else if (transformation_type === 'sqrt') {
+      transformedData = transformedData.map(row => ({
+        ...row,
+        clicks: Math.sqrt(Math.abs(row.clicks)),
+        revenue: Math.sqrt(Math.abs(row.revenue)),
+      }));
+    }
+
+    // Save transformation
+    await c.env.DB.prepare(`
+      INSERT INTO data_transformations (project_id, transformation_type, parameters)
+      VALUES (?, ?, ?)
+    `).bind(project_id, transformation_type, JSON.stringify(parameters || {})).run();
+
+    return c.json({ success: true, transformed_data: transformedData });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// Get transformations
+app.get('/api/transformations/:projectId', async (c) => {
+  try {
+    const session = await getSession(c);
+    if (!session) {
+      return c.json({ success: false, error: 'Not authenticated' }, 401);
+    }
+
+    const projectId = c.req.param('projectId');
+
+    const transformations = await c.env.DB.prepare(`
+      SELECT * FROM data_transformations
+      WHERE project_id = ?
+      ORDER BY applied_at DESC
+      LIMIT 20
+    `).bind(projectId).all();
+
+    return c.json({ success: true, transformations: transformations.results });
   } catch (error: any) {
     return c.json({ success: false, error: error.message }, 500);
   }
