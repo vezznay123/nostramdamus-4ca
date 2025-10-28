@@ -161,8 +161,88 @@ CREATE INDEX IF NOT EXISTS idx_forecast_runs_project ON forecast_runs(project_id
 CREATE INDEX IF NOT EXISTS idx_forecast_runs_status ON forecast_runs(project_id, status);
 CREATE INDEX IF NOT EXISTS idx_forecast_runs_date ON forecast_runs(run_at);
 
+-- Forecast accuracy tracking (actual vs predicted)
+CREATE TABLE IF NOT EXISTS forecast_accuracy (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id TEXT NOT NULL,
+  category TEXT NOT NULL,
+  forecast_date TEXT NOT NULL,
+  forecast_run_id INTEGER NOT NULL,
+  predicted_clicks REAL,
+  actual_clicks REAL,
+  predicted_revenue REAL,
+  actual_revenue REAL,
+  clicks_error REAL, -- Absolute error
+  revenue_error REAL,
+  clicks_error_pct REAL, -- Percentage error
+  revenue_error_pct REAL,
+  recorded_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE,
+  FOREIGN KEY (forecast_run_id) REFERENCES forecast_runs(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_accuracy_project ON forecast_accuracy(project_id);
+CREATE INDEX IF NOT EXISTS idx_accuracy_date ON forecast_accuracy(project_id, forecast_date);
+CREATE INDEX IF NOT EXISTS idx_accuracy_category ON forecast_accuracy(project_id, category);
+
+-- Forecast alerts/thresholds
+CREATE TABLE IF NOT EXISTS forecast_alerts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id TEXT NOT NULL,
+  category TEXT,
+  alert_type TEXT NOT NULL, -- 'spike', 'drop', 'threshold', 'accuracy'
+  metric TEXT NOT NULL, -- 'clicks', 'revenue'
+  threshold_value REAL,
+  comparison TEXT DEFAULT 'greater', -- 'greater', 'less', 'equal'
+  notification_email TEXT,
+  is_active INTEGER DEFAULT 1,
+  created_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_alerts_project ON forecast_alerts(project_id);
+CREATE INDEX IF NOT EXISTS idx_alerts_active ON forecast_alerts(is_active);
+
+-- Alert history
+CREATE TABLE IF NOT EXISTS alert_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  alert_id INTEGER NOT NULL,
+  project_id TEXT NOT NULL,
+  triggered_at TEXT DEFAULT (datetime('now')),
+  forecast_date TEXT,
+  category TEXT,
+  alert_message TEXT,
+  forecast_value REAL,
+  threshold_value REAL,
+  FOREIGN KEY (alert_id) REFERENCES forecast_alerts(id) ON DELETE CASCADE,
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_alert_history_project ON alert_history(project_id);
+CREATE INDEX IF NOT EXISTS idx_alert_history_date ON alert_history(triggered_at);
+
+-- Data quality metrics
+CREATE TABLE IF NOT EXISTS data_quality_checks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id TEXT NOT NULL,
+  check_date TEXT DEFAULT (datetime('now')),
+  total_records INTEGER,
+  missing_values INTEGER,
+  duplicate_records INTEGER,
+  outliers_detected INTEGER,
+  data_completeness_pct REAL,
+  quality_score REAL, -- 0-100
+  issues TEXT, -- JSON array of issues
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_quality_project ON data_quality_checks(project_id);
+CREATE INDEX IF NOT EXISTS idx_quality_date ON data_quality_checks(check_date);
+
 -- Add missing columns to existing tables (if they don't exist)
 -- Note: SQLite doesn't support ADD COLUMN IF NOT EXISTS, so these must be run manually
 
 -- ALTER TABLE users ADD COLUMN access_token TEXT;
 -- ALTER TABLE scheduler_configs ADD COLUMN forecast_params TEXT; -- JSON of forecast parameters
+-- ALTER TABLE scheduler_configs ADD COLUMN notification_email TEXT;
+-- ALTER TABLE forecast_runs ADD COLUMN data_quality_score REAL;

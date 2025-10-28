@@ -692,6 +692,333 @@ app.post('/api/config/data-source', async (c) => {
 });
 
 // ============================================================================
+// FORECAST ACCURACY & COMPARISON
+// ============================================================================
+
+// Record actual values for accuracy tracking
+app.post('/api/record-actual-values', async (c) => {
+  try {
+    const session = await getSession(c);
+    if (!session) {
+      return c.json({ success: false, error: 'Not authenticated' }, 401);
+    }
+
+    const body = await c.req.json();
+    const { project_id, actual_data } = body;
+
+    if (!project_id || !actual_data || !Array.isArray(actual_data)) {
+      return c.json({ success: false, error: 'Missing required fields' }, 400);
+    }
+
+    // Find matching forecasts and calculate accuracy
+    for (const actual of actual_data) {
+      const { date, category, clicks, revenue } = actual;
+
+      // Find the most recent forecast for this date/category
+      const forecast = await c.env.DB.prepare(`
+        SELECT fr.id as run_id, fres.clicks_forecast, fres.revenue_forecast
+        FROM forecast_runs fr
+        JOIN forecast_results fres ON fres.project_id = fr.project_id
+        WHERE fr.project_id = ?
+          AND fres.category = ?
+          AND fres.forecast_date = ?
+          AND fr.status = 'completed'
+        ORDER BY fr.run_at DESC
+        LIMIT 1
+      `).bind(project_id, category, date).first();
+
+      if (forecast) {
+        const clicksError = Math.abs(clicks - forecast.clicks_forecast);
+        const revenueError = Math.abs(revenue - forecast.revenue_forecast);
+        const clicksErrorPct = forecast.clicks_forecast > 0
+          ? (clicksError / forecast.clicks_forecast) * 100
+          : 0;
+        const revenueErrorPct = forecast.revenue_forecast > 0
+          ? (revenueError / forecast.revenue_forecast) * 100
+          : 0;
+
+        await c.env.DB.prepare(`
+          INSERT INTO forecast_accuracy (
+            project_id, category, forecast_date, forecast_run_id,
+            predicted_clicks, actual_clicks, predicted_revenue, actual_revenue,
+            clicks_error, revenue_error, clicks_error_pct, revenue_error_pct
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(
+          project_id, category, date, forecast.run_id,
+          forecast.clicks_forecast, clicks,
+          forecast.revenue_forecast, revenue,
+          clicksError, revenueError, clicksErrorPct, revenueErrorPct
+        ).run();
+      }
+    }
+
+    return c.json({ success: true, message: 'Actual values recorded' });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// Get forecast accuracy metrics
+app.get('/api/forecast-accuracy/:projectId', async (c) => {
+  try {
+    const session = await getSession(c);
+    if (!session) {
+      return c.json({ success: false, error: 'Not authenticated' }, 401);
+    }
+
+    const projectId = c.req.param('projectId');
+
+    // Calculate overall accuracy metrics
+    const metrics = await c.env.DB.prepare(`
+      SELECT
+        COUNT(*) as total_comparisons,
+        AVG(clicks_error_pct) as avg_clicks_error_pct,
+        AVG(revenue_error_pct) as avg_revenue_error_pct,
+        AVG(clicks_error) as avg_clicks_error,
+        AVG(revenue_error) as avg_revenue_error,
+        category
+      FROM forecast_accuracy
+      WHERE project_id = ?
+      GROUP BY category
+    `).bind(projectId).all();
+
+    // Get recent accuracy data
+    const recent = await c.env.DB.prepare(`
+      SELECT *
+      FROM forecast_accuracy
+      WHERE project_id = ?
+      ORDER BY recorded_at DESC
+      LIMIT 50
+    `).bind(projectId).all();
+
+    return c.json({
+      success: true,
+      metrics: metrics.results,
+      recent_accuracy: recent.results
+    });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// ============================================================================
+// DATA QUALITY VALIDATION
+// ============================================================================
+
+// Run data quality check
+app.post('/api/data-quality-check', async (c) => {
+  try {
+    const session = await getSession(c);
+    if (!session) {
+      return c.json({ success: false, error: 'Not authenticated' }, 401);
+    }
+
+    const body = await c.req.json();
+    const { project_id, historical_data } = body;
+
+    if (!project_id || !historical_data || !Array.isArray(historical_data)) {
+      return c.json({ success: false, error: 'Missing required fields' }, 400);
+    }
+
+    const issues: string[] = [];
+    let missingValues = 0;
+    let duplicates = 0;
+    let outliers = 0;
+
+    // Check for missing values
+    for (const record of historical_data) {
+      if (!record.date || record.clicks === null || record.clicks === undefined ||
+          record.revenue === null || record.revenue === undefined) {
+        missingValues++;
+        issues.push(`Missing values in record: ${JSON.stringify(record)}`);
+      }
+    }
+
+    // Check for duplicates
+    const seen = new Set();
+    for (const record of historical_data) {
+      const key = `${record.date}-${record.category}`;
+      if (seen.has(key)) {
+        duplicates++;
+        issues.push(`Duplicate record: ${key}`);
+      }
+      seen.add(key);
+    }
+
+    // Check for outliers (using simple statistical method)
+    const clicksValues = historical_data.map(r => r.clicks).filter(v => v !== null);
+    const revenueValues = historical_data.map(r => r.revenue).filter(v => v !== null);
+
+    if (clicksValues.length > 0) {
+      const clicksMean = clicksValues.reduce((a, b) => a + b, 0) / clicksValues.length;
+      const clicksStd = Math.sqrt(clicksValues.reduce((sum, val) => sum + Math.pow(val - clicksMean, 2), 0) / clicksValues.length);
+
+      for (const record of historical_data) {
+        if (Math.abs(record.clicks - clicksMean) > 3 * clicksStd) {
+          outliers++;
+          issues.push(`Outlier detected in clicks: ${record.category} on ${record.date} = ${record.clicks}`);
+        }
+      }
+    }
+
+    const totalRecords = historical_data.length;
+    const dataCompletenessPct = totalRecords > 0
+      ? ((totalRecords - missingValues) / totalRecords) * 100
+      : 0;
+
+    const qualityScore = Math.max(0, 100 - (missingValues * 2) - (duplicates * 3) - (outliers * 1));
+
+    // Save to database
+    await c.env.DB.prepare(`
+      INSERT INTO data_quality_checks (
+        project_id, total_records, missing_values, duplicate_records,
+        outliers_detected, data_completeness_pct, quality_score, issues
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).bind(
+      project_id, totalRecords, missingValues, duplicates,
+      outliers, dataCompletenessPct, qualityScore, JSON.stringify(issues)
+    ).run();
+
+    return c.json({
+      success: true,
+      quality_check: {
+        total_records: totalRecords,
+        missing_values: missingValues,
+        duplicate_records: duplicates,
+        outliers_detected: outliers,
+        data_completeness_pct: dataCompletenessPct.toFixed(2),
+        quality_score: qualityScore.toFixed(2),
+        issues: issues.slice(0, 10) // Return first 10 issues
+      }
+    });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// Get data quality history
+app.get('/api/data-quality/:projectId', async (c) => {
+  try {
+    const session = await getSession(c);
+    if (!session) {
+      return c.json({ success: false, error: 'Not authenticated' }, 401);
+    }
+
+    const projectId = c.req.param('projectId');
+
+    const history = await c.env.DB.prepare(`
+      SELECT *
+      FROM data_quality_checks
+      WHERE project_id = ?
+      ORDER BY check_date DESC
+      LIMIT 20
+    `).bind(projectId).all();
+
+    return c.json({
+      success: true,
+      quality_history: history.results
+    });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// ============================================================================
+// FORECAST ALERTS
+// ============================================================================
+
+// Create forecast alert
+app.post('/api/alerts', async (c) => {
+  try {
+    const session = await getSession(c);
+    if (!session) {
+      return c.json({ success: false, error: 'Not authenticated' }, 401);
+    }
+
+    const body = await c.req.json();
+    const { project_id, category, alert_type, metric, threshold_value, comparison, notification_email } = body;
+
+    await c.env.DB.prepare(`
+      INSERT INTO forecast_alerts (
+        project_id, category, alert_type, metric, threshold_value, comparison, notification_email
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).bind(project_id, category || null, alert_type, metric, threshold_value, comparison, notification_email || null).run();
+
+    return c.json({ success: true, message: 'Alert created' });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// Get alerts for project
+app.get('/api/alerts/:projectId', async (c) => {
+  try {
+    const session = await getSession(c);
+    if (!session) {
+      return c.json({ success: false, error: 'Not authenticated' }, 401);
+    }
+
+    const projectId = c.req.param('projectId');
+
+    const alerts = await c.env.DB.prepare(`
+      SELECT * FROM forecast_alerts WHERE project_id = ? ORDER BY created_at DESC
+    `).bind(projectId).all();
+
+    return c.json({ success: true, alerts: alerts.results });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// Delete alert
+app.delete('/api/alerts/:alertId', async (c) => {
+  try {
+    const session = await getSession(c);
+    if (!session) {
+      return c.json({ success: false, error: 'Not authenticated' }, 401);
+    }
+
+    const alertId = c.req.param('alertId');
+
+    await c.env.DB.prepare(`DELETE FROM forecast_alerts WHERE id = ?`).bind(alertId).run();
+
+    return c.json({ success: true, message: 'Alert deleted' });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// Get forecast history
+app.get('/api/forecast-history/:projectId', async (c) => {
+  try {
+    const session = await getSession(c);
+    if (!session) {
+      return c.json({ success: false, error: 'Not authenticated' }, 401);
+    }
+
+    const projectId = c.req.param('projectId');
+
+    const history = await c.env.DB.prepare(`
+      SELECT id, run_at, status, forecast_data
+      FROM forecast_runs
+      WHERE project_id = ?
+      ORDER BY run_at DESC
+      LIMIT 50
+    `).bind(projectId).all();
+
+    return c.json({
+      success: true,
+      forecast_history: history.results.map(row => ({
+        ...row,
+        forecast_data: row.forecast_data ? JSON.parse(row.forecast_data as string) : null
+      }))
+    });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// ============================================================================
 // SCHEDULED FORECASTING (CRON)
 // ============================================================================
 
