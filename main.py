@@ -1,13 +1,12 @@
 """
 Nostradamus Forecasting - Google Cloud Function
-Provides Prophet and SARIMA forecasting endpoints
+Provides SARIMA forecasting with auto-tuning
 """
 
 import json
 import pandas as pd
 import numpy as np
 from flask import Request, jsonify
-from prophet import Prophet
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from typing import List, Dict, Any
 import warnings
@@ -28,13 +27,9 @@ def forecast(request: Request):
             "mode": "single" | "correlated",
             "metric": "clicks" | "revenue",
             "forecast_days": 14,
-            "method": "prophet" | "sarima",
 
             "p": 1, "d": 1, "q": 1,
             "P": 1, "D": 0, "Q": 1, "s": 7,
-
-            "seasonality_mode": "additive" | "multiplicative",
-            "changepoint_prior_scale": 0.05,
 
             "include_volatility": true,
             "confidence_level": 0.95
@@ -92,7 +87,6 @@ def forecast(request: Request):
         mode = params.get('mode', 'correlated')
         metric = params.get('metric', 'clicks')
         forecast_days = params.get('forecast_days', 14)
-        method = params.get('method', 'prophet')
         include_volatility = params.get('include_volatility', True)
         confidence_level = params.get('confidence_level', 0.95)
 
@@ -150,26 +144,16 @@ def forecast_single_metric(
     include_volatility: bool,
     confidence_level: float
 ) -> List[Dict[str, Any]]:
-    """Forecast a single metric using Prophet or SARIMA"""
+    """Forecast a single metric using SARIMA"""
 
-    if method == 'prophet':
-        return forecast_with_prophet(
-            data,
-            metric,
-            forecast_days,
-            params,
-            include_volatility,
-            confidence_level
-        )
-    else:
-        return forecast_with_sarima(
-            data,
-            metric,
-            forecast_days,
-            params,
-            include_volatility,
-            confidence_level
-        )
+    return forecast_with_sarima(
+        data,
+        metric,
+        forecast_days,
+        params,
+        include_volatility,
+        confidence_level
+    )
 
 
 def forecast_correlated(
@@ -182,24 +166,14 @@ def forecast_correlated(
 ) -> List[Dict[str, Any]]:
     """Forecast both metrics with correlation"""
 
-    if method == 'prophet':
-        clicks_forecast = forecast_with_prophet(
-            data,
-            'clicks',
-            forecast_days,
-            params,
-            include_volatility,
-            confidence_level
-        )
-    else:
-        clicks_forecast = forecast_with_sarima(
-            data,
-            'clicks',
-            forecast_days,
-            params,
-            include_volatility,
-            confidence_level
-        )
+    clicks_forecast = forecast_with_sarima(
+        data,
+        'clicks',
+        forecast_days,
+        params,
+        include_volatility,
+        confidence_level
+    )
 
     valid_data = data[data['clicks'] > 0]
     avg_ratio = (valid_data['revenue'] / valid_data['clicks']).mean()
@@ -224,57 +198,6 @@ def forecast_correlated(
         result.append(point)
 
     return result
-
-
-def forecast_with_prophet(
-    data: pd.DataFrame,
-    metric: str,
-    forecast_days: int,
-    params: Dict[str, Any],
-    include_volatility: bool,
-    confidence_level: float
-) -> List[Dict[str, Any]]:
-    """Forecast using Facebook Prophet"""
-
-    prophet_df = pd.DataFrame({
-        'ds': data['date'],
-        'y': data[metric]
-    })
-
-    seasonality_mode = params.get('seasonality_mode', 'additive')
-    changepoint_prior_scale = params.get('changepoint_prior_scale', 0.05)
-
-    model = Prophet(
-        seasonality_mode=seasonality_mode,
-        changepoint_prior_scale=changepoint_prior_scale,
-        interval_width=confidence_level
-    )
-
-    model.fit(prophet_df)
-
-    future = model.make_future_dataframe(periods=forecast_days)
-
-    forecast = model.predict(future)
-
-    future_forecast = forecast.tail(forecast_days)
-
-    results = []
-    for _, row in future_forecast.iterrows():
-        point = {
-            'date': row['ds'].strftime('%Y-%m-%d'),
-            f'{metric}_forecast': max(0, round(row['yhat'], 2))
-        }
-
-        other_metric = 'revenue' if metric == 'clicks' else 'clicks'
-        point[f'{other_metric}_forecast'] = 0
-
-        if include_volatility:
-            point[f'{metric}_lower'] = max(0, round(row['yhat_lower'], 2))
-            point[f'{metric}_upper'] = max(0, round(row['yhat_upper'], 2))
-
-        results.append(point)
-
-    return results
 
 
 def forecast_with_sarima(
