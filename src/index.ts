@@ -1170,14 +1170,25 @@ app.post('/api/export-csv', async (c) => {
       return c.json({ success: false, error: 'Missing forecasts data' }, 400);
     }
 
+    // Helper function to escape CSV values
+    const escapeCsvValue = (value: string): string => {
+      if (!value) return '';
+      const stringValue = String(value);
+      // If value contains comma, quote, or newline, wrap in quotes and escape quotes
+      if (stringValue.includes(',') || stringValue.includes('"') || stringValue.includes('\n')) {
+        return `"${stringValue.replace(/"/g, '""')}"`;
+      }
+      return stringValue;
+    };
+
     // Convert forecasts to CSV
     const rows: string[][] = [['Date', 'Category', 'Clicks Forecast', 'Revenue Forecast', 'Clicks Lower', 'Clicks Upper', 'Revenue Lower', 'Revenue Upper']];
 
     for (const categoryForecast of forecasts) {
       for (const forecast of categoryForecast.forecasts) {
         rows.push([
-          forecast.date,
-          categoryForecast.category,
+          escapeCsvValue(forecast.date),
+          escapeCsvValue(categoryForecast.category),
           String(forecast.clicks_forecast || 0),
           String(forecast.revenue_forecast || 0),
           String(forecast.clicks_lower || ''),
@@ -1272,6 +1283,41 @@ app.delete('/api/scenarios/:scenarioId', async (c) => {
     await c.env.DB.prepare(`DELETE FROM forecast_scenarios WHERE id = ?`).bind(scenarioId).run();
 
     return c.json({ success: true });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// Run scenario forecast
+app.post('/api/scenarios/run', async (c) => {
+  try {
+    const session = await getSession(c);
+    if (!session) {
+      return c.json({ success: false, error: 'Not authenticated' }, 401);
+    }
+
+    const body = await c.req.json();
+    const { scenario_id, historical_data } = body;
+
+    if (!scenario_id || !historical_data) {
+      return c.json({ success: false, error: 'Missing required fields' }, 400);
+    }
+
+    // Get scenario parameters
+    const scenario = await c.env.DB.prepare(`
+      SELECT * FROM forecast_scenarios WHERE id = ?
+    `).bind(scenario_id).first();
+
+    if (!scenario) {
+      return c.json({ success: false, error: 'Scenario not found' }, 404);
+    }
+
+    const parameters = JSON.parse(scenario.parameters as string);
+
+    // Generate forecast using scenario parameters
+    const forecasts = await generateMLForecast(historical_data, parameters, c.env.GCP_FORECAST_URL);
+
+    return c.json({ success: true, forecasts });
   } catch (error: any) {
     return c.json({ success: false, error: error.message }, 500);
   }
@@ -1508,7 +1554,7 @@ app.get('/api/notifications', async (c) => {
 });
 
 // Mark notification as read
-app.patch('/api/notifications/:notificationId/read', async (c) => {
+app.post('/api/notifications/:notificationId/read', async (c) => {
   try {
     const session = await getSession(c);
     if (!session) {
@@ -1519,6 +1565,44 @@ app.patch('/api/notifications/:notificationId/read', async (c) => {
 
     await c.env.DB.prepare(`
       UPDATE notifications SET is_read = 1 WHERE id = ? AND user_id = ?
+    `).bind(notificationId, session.userId).run();
+
+    return c.json({ success: true });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// Mark all notifications as read
+app.post('/api/notifications/mark-all-read', async (c) => {
+  try {
+    const session = await getSession(c);
+    if (!session) {
+      return c.json({ success: false, error: 'Not authenticated' }, 401);
+    }
+
+    await c.env.DB.prepare(`
+      UPDATE notifications SET is_read = 1 WHERE user_id = ?
+    `).bind(session.userId).run();
+
+    return c.json({ success: true });
+  } catch (error: any) {
+    return c.json({ success: false, error: error.message }, 500);
+  }
+});
+
+// Delete notification
+app.delete('/api/notifications/:notificationId', async (c) => {
+  try {
+    const session = await getSession(c);
+    if (!session) {
+      return c.json({ success: false, error: 'Not authenticated' }, 401);
+    }
+
+    const notificationId = c.req.param('notificationId');
+
+    await c.env.DB.prepare(`
+      DELETE FROM notifications WHERE id = ? AND user_id = ?
     `).bind(notificationId, session.userId).run();
 
     return c.json({ success: true });
