@@ -145,3 +145,24 @@ CREATE TABLE IF NOT EXISTS activity_log (
 CREATE INDEX IF NOT EXISTS idx_activity_project ON activity_log(project_id);
 CREATE INDEX IF NOT EXISTS idx_activity_user ON activity_log(user_id);
 CREATE INDEX IF NOT EXISTS idx_activity_date ON activity_log(created_at);
+
+-- Forecast runs history
+CREATE TABLE IF NOT EXISTS forecast_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  project_id TEXT NOT NULL,
+  run_at TEXT DEFAULT (datetime('now')),
+  status TEXT NOT NULL, -- 'completed', 'failed'
+  forecast_data TEXT, -- JSON of forecast results
+  error_message TEXT,
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_forecast_runs_project ON forecast_runs(project_id);
+CREATE INDEX IF NOT EXISTS idx_forecast_runs_status ON forecast_runs(project_id, status);
+CREATE INDEX IF NOT EXISTS idx_forecast_runs_date ON forecast_runs(run_at);
+
+-- Add missing columns to existing tables (if they don't exist)
+-- Note: SQLite doesn't support ADD COLUMN IF NOT EXISTS, so these must be run manually
+
+-- ALTER TABLE users ADD COLUMN access_token TEXT;
+-- ALTER TABLE scheduler_configs ADD COLUMN forecast_params TEXT; -- JSON of forecast parameters
