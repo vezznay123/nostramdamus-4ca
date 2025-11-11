@@ -450,7 +450,6 @@ let activeCategory = null;
 let activityLog = [];
 
 // DOM elements
-const loadSampleBtn = document.getElementById('loadSampleBtn');
 const fileInput = document.getElementById('fileInput');
 const loadGoogleSheetsBtn = document.getElementById('loadGoogleSheetsBtn');
 const googleSheetsModal = document.getElementById('googleSheetsModal');
@@ -593,11 +592,6 @@ function initEventListeners() {
             fileInput.click();
         });
     }
-
-    loadSampleBtn.addEventListener('click', () => {
-        loadSampleData();
-        document.getElementById('dataSourceModal').style.display = 'none';
-    });
     fileInput.addEventListener('change', handleFileUpload);
     loadGoogleSheetsBtn.addEventListener('click', () => {
         document.getElementById('dataSourceModal').style.display = 'none';
@@ -2734,10 +2728,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         Logout
                     </a>
                     
-                    <a href="/admin" class="btn btn-secondary" style="text-decoration: none; white-space: nowrap;">
-                        Configuration
-                    </a>
-                </div>
+                    </div>
             </div>
         </header>
 
