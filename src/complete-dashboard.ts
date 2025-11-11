@@ -2811,10 +2811,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 <p style="color: #666; text-align: center; margin-bottom: 15px; font-size: 0.9em;" id="otherSourcesLabel">Or choose another source:</p>
 
                 <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 20px;">
-                    <button id="loadSampleBtn" class="btn btn-primary" style="height: 80px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;">
-                        <span style="font-size: 2em;">📊</span>
-                        <span>Sample Data</span>
-                    </button>
                     <button id="loadCSVBtn" class="btn btn-secondary" style="height: 80px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px;">
                         <span style="font-size: 2em;">📄</span>
                         <span>Upload CSV</span>
